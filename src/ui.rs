@@ -156,8 +156,8 @@ pub fn draw(profile: &Profile, tab: Tab) -> Buffer {
     github_strip(profile, strip, &mut buf);
 
     Line::from(vec![
-        Span::from("▲ ").fg(ACCENT),
-        Span::from("click a tab to switch it for everyone"),
+        Span::from("▼ ").fg(ACCENT),
+        Span::from("pick a tab below this window to switch it for everyone"),
     ])
     .fg(MUTED)
     .render(footer, &mut buf);
