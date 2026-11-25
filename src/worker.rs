@@ -164,7 +164,7 @@ async fn tui(env: &Env) -> Result<Response> {
         .as_ref()
         .and_then(|t| t.image_url.as_deref())
     {
-        profile.cover_art = cover_art(url).await;
+        profile.cover_art = cover_art(&sources::smaller_cover(url)).await;
     }
     let (buf, art) = draw(&profile, tab.unwrap_or(Tab::Spotatui));
     let svg = crate::svg::render(&buf, profile.cover_art.as_deref().map(|uri| (art, uri)));

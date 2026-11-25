@@ -200,6 +200,14 @@ pub fn calendar(json: &str) -> Option<(Vec<u8>, u64)> {
     Some((levels, cal["totalContributions"].as_u64()?))
 }
 
+/// Spotify's 300 px cover instead of the 640 px one; the panel shows it at about 110 px.
+pub fn smaller_cover(url: &str) -> String {
+    match url.strip_prefix("https://i.scdn.co/image/ab67616d0000b273") {
+        Some(id) => format!("https://i.scdn.co/image/ab67616d00001e02{id}"),
+        None => url.to_owned(),
+    }
+}
+
 /// spotatui.com's `/widget/<username>.json`; `None` when nothing is playing.
 pub fn now_playing(json: &str) -> Option<Track> {
     let v: Value = serde_json::from_str(json).ok()?;
@@ -246,6 +254,18 @@ mod tests {
             ("?", "steamie")
         );
         assert!(p.now_playing.is_none() && p.discord.is_none() && p.languages.is_empty());
+    }
+
+    #[test]
+    fn picks_the_300px_spotify_cover() {
+        assert_eq!(
+            smaller_cover("https://i.scdn.co/image/ab67616d0000b273ce38"),
+            "https://i.scdn.co/image/ab67616d00001e02ce38"
+        );
+        assert_eq!(
+            smaller_cover("https://i.ytimg.com/vi/x/hq.jpg"),
+            "https://i.ytimg.com/vi/x/hq.jpg"
+        );
     }
 
     #[test]
