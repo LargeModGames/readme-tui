@@ -205,11 +205,16 @@ fn header(p: &Profile, area: Rect, buf: &mut Buffer) {
                 }
                 _ => Span::from(format!("▶ {}", clock(t.progress_ms, t.duration_ms))).fg(ACCENT),
             };
+            // Fit "♪ title · subtitle  status" in the column, shortening the subtitle first.
+            let room =
+                (live.width as usize).saturating_sub(2 + 3 + 2 + status.content.chars().count());
+            let title = truncate(&t.title, room.saturating_sub(room / 3).max(room.min(12)));
+            let subtitle = truncate(&t.subtitle, room.saturating_sub(title.chars().count()));
             Line::from(vec![
                 Span::from("♪ ").fg(ACCENT),
-                Span::from(t.title.as_str()).bold(),
+                Span::from(title).bold(),
                 Span::from(" · ").fg(MUTED),
-                Span::from(t.subtitle.as_str()),
+                Span::from(subtitle),
                 Span::from("  "),
                 status,
             ])
@@ -499,6 +504,10 @@ fn github_strip(p: &Profile, area: Rect, buf: &mut Buffer) {
 
 /// One segmented bar sized by percentage, then a two-column legend.
 fn language_bar(langs: &[Language], area: Rect, buf: &mut Buffer) {
+    if langs.is_empty() {
+        Line::from(" ?").render(area, buf);
+        return;
+    }
     let width = area.width.saturating_sub(2) as f64;
     let total: f64 = langs.iter().map(|l| l.percent).sum();
     let mut x: f64 = 0.0;
@@ -655,6 +664,15 @@ fn wrap<'a>(segments: &[(&'a str, Style)], width: usize, indent: &'static str) -
     lines
 }
 
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 /// `m:ss`, or `m:ss / m:ss` when the duration is known.
 fn clock(progress_ms: u64, duration_ms: u64) -> String {
     let mmss = |ms: u64| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60);
@@ -680,6 +698,34 @@ fn grouped(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_tracks_keep_their_progress_visible() {
+        let profile = crate::sources::assemble(&crate::sources::Raw {
+            now_playing: Some(
+                r#"{"state":"playing","title":"Used To Love (with Dean Lewis)","subtitle":"Martin Garrix, Dean Lewis · Used To Love (with Dean Lewis)","progressMs":89770,"durationMs":236764}"#.into(),
+            ),
+            ..Default::default()
+        });
+        let buf = draw(&profile, Tab::Spotatui);
+        let row: String = (0..WIDTH).map(|x| buf[(x, 6)].symbol()).collect();
+        assert!(row.contains("▶ 1:29 / 3:56"), "{row}");
+        assert!(row.contains('…'), "{row}");
+    }
+
+    #[test]
+    fn renders_with_every_source_missing() {
+        let profile = crate::sources::assemble(&crate::sources::Raw::default());
+        for tab in Tab::ALL {
+            draw(&profile, tab);
+        }
+    }
+
+    #[test]
+    fn truncates_with_ellipsis() {
+        assert_eq!(truncate("abcdef", 4), "abc…");
+        assert_eq!(truncate("abc", 4), "abc");
+    }
 
     #[test]
     fn formats_track_clock() {
