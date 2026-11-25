@@ -1,0 +1,5 @@
+target/
+preview/
+build/
+node_modules/
+.wrangler/

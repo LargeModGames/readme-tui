@@ -1,0 +1,19 @@
+[package]
+name = "readme_tui"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ratatui = { version = "0.30.2", default-features = false }
+serde_json = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+futures = "0.3"
+worker = "0.9"
+
+[profile.release]
+opt-level = "s"
+lto = true
