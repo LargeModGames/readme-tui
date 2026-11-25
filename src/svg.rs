@@ -1,6 +1,7 @@
 use std::fmt::Write;
 
 use ratatui::buffer::{Buffer, Cell};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 
 pub const CELL_W: f32 = 8.5;
@@ -11,8 +12,9 @@ const PAD: f32 = 12.0;
 pub const FG: (u8, u8, u8) = (0xF8, 0xF8, 0xF2);
 pub const BG: (u8, u8, u8) = (0x27, 0x28, 0x22);
 
-/// Renders every cell of `buf` onto a fixed grid so columns line up in any monospace font.
-pub fn render(buf: &Buffer) -> String {
+/// Renders every cell of `buf` onto a fixed grid so columns line up in any monospace font,
+/// then draws `image` (a `data:` URI) over the cells of its area.
+pub fn render(buf: &Buffer, image: Option<(Rect, &str)>) -> String {
     let area = buf.area;
     let width = area.width as f32 * CELL_W + PAD * 2.0;
     let height = area.height as f32 * CELL_H + PAD * 2.0;
@@ -34,6 +36,14 @@ pub fn render(buf: &Buffer) -> String {
         render_text(&mut out, &row, y - area.top());
     }
 
+    if let Some((r, href)) = image {
+        let (x, y) = (r.x as f32 * CELL_W, r.y as f32 * CELL_H);
+        let (w, h) = (r.width as f32 * CELL_W, r.height as f32 * CELL_H);
+        let _ = write!(
+            out,
+            r#"<clipPath id="art"><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4"/></clipPath><image x="{x}" y="{y}" width="{w}" height="{h}" href="{href}" preserveAspectRatio="xMidYMid slice" clip-path="url(#art)"/>"#
+        );
+    }
     out.push_str("</g></svg>");
     out
 }
@@ -178,16 +188,30 @@ fn to_rgb(color: Color) -> Option<(u8, u8, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::layout::Rect;
     use ratatui::style::Style;
 
     #[test]
     fn places_each_glyph_on_the_grid_and_escapes_markup() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
         buf.set_string(1, 0, "a<b", Style::default().fg(Color::Rgb(1, 2, 3)));
-        let svg = render(&buf);
+        let svg = render(&buf, None);
         assert!(
             svg.contains(r##"<text x="8.5 17 25.5" y="13" fill="#010203">a&lt;b</text>"##),
+            "{svg}"
+        );
+    }
+
+    #[test]
+    fn draws_the_image_over_its_cell_area() {
+        let buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+        let svg = render(
+            &buf,
+            Some((Rect::new(1, 1, 2, 1), "data:image/png;base64,AA==")),
+        );
+        assert!(
+            svg.contains(
+                r#"<image x="8.5" y="18" width="17" height="18" href="data:image/png;base64,AA==""#
+            ),
             "{svg}"
         );
     }
@@ -196,7 +220,7 @@ mod tests {
     fn draws_backgrounds_for_styled_runs_only() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
         buf.set_string(2, 0, "  ", Style::default().bg(Color::Rgb(9, 9, 9)));
-        let svg = render(&buf);
+        let svg = render(&buf, None);
         assert_eq!(svg.matches("<rect").count(), 2, "{svg}");
         assert!(
             svg.contains(r##"<rect x="17" y="0" width="17" height="18" fill="#090909"/>"##),

@@ -1,5 +1,6 @@
 //! Cloudflare Worker: serves the TUI as a live SVG and records tab clicks.
 
+use base64::Engine;
 use futures::join;
 use worker::*;
 
@@ -10,6 +11,46 @@ const STATS: &str = "https://github-readme-stats-zeta-eight-88.vercel.app";
 const PROFILE: &str = "https://github.com/LargeModGames";
 /// How long a slow source (cards, badges, calendar) is reused before it is refetched.
 const SLOW_TTL_MS: u64 = 30 * 60 * 1000;
+/// Cover art hosts spotatui reports, the same allowlist spotatui.com's own widget uses.
+const ART_HOSTS: [&str; 3] = ["i.scdn.co", "i.ytimg.com", "static.qobuz.com"];
+const ART_MAX_BYTES: usize = 300 * 1024;
+
+/// The selected tab. A Durable Object, unlike KV, makes a click visible to the very next render
+/// anywhere and accepts rapid clicks, so switching is immediate for everyone.
+#[durable_object]
+pub struct TabState {
+    state: State,
+}
+
+impl DurableObject for TabState {
+    fn new(state: State, _env: Env) -> Self {
+        Self { state }
+    }
+
+    async fn fetch(&self, mut req: Request) -> Result<Response> {
+        let storage = self.state.storage();
+        if req.method() == Method::Put {
+            storage.put("tab", req.text().await?).await?;
+        }
+        let tab: Option<String> = storage.get("tab").await?;
+        Response::ok(tab.unwrap_or_default())
+    }
+}
+
+fn tab_state(env: &Env) -> Result<Stub> {
+    env.durable_object("TAB")?
+        .id_from_name("global")?
+        .get_stub()
+}
+
+async fn current_tab(env: &Env) -> Option<Tab> {
+    let mut res = tab_state(env)
+        .ok()?
+        .fetch_with_str("https://tab/")
+        .await
+        .ok()?;
+    Tab::from_slug(&res.text().await.ok()?)
+}
 
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -17,10 +58,11 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get_async("/tui.svg", |_, ctx| async move { tui(&ctx.env).await })
         .get_async("/tab/:slug", |_, ctx| async move {
             if let Some(tab) = ctx.param("slug").and_then(|s| Tab::from_slug(s)) {
-                // A failed write (e.g. the daily KV quota) still sends the visitor back.
-                if let Ok(put) = ctx.env.kv("STATE")?.put("tab", tab.slug()) {
-                    let _ = put.execute().await;
-                }
+                let mut init = RequestInit::new();
+                init.with_method(Method::Put)
+                    .with_body(Some(tab.slug().into()));
+                let req = Request::new_with_init("https://tab/", &init)?;
+                tab_state(&ctx.env)?.fetch_with_request(req).await?;
             }
             Response::redirect(Url::parse(PROFILE)?)
         })
@@ -30,19 +72,12 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
 async fn tui(env: &Env) -> Result<Response> {
     let kv = env.kv("STATE")?;
-    let tab = kv
-        .get("tab")
-        .text()
-        .await
-        .ok()
-        .flatten()
-        .and_then(|s| Tab::from_slug(&s))
-        .unwrap_or(Tab::Spotatui);
     let token = env.secret("GITHUB_TOKEN").ok().map(|s| s.to_string());
     let card = |query: &str| format!("{STATS}/api{query}&theme=monokai&hide_border=true");
     let pin = |repo: &str| card(&format!("/pin/?username=LargeModGames&repo={repo}"));
 
     let (
+        tab,
         stats,
         top_langs,
         pin_spotatui,
@@ -56,6 +91,7 @@ async fn tui(env: &Env) -> Result<Response> {
         now_playing,
     ) =
         join!(
+        current_tab(env),
         cached(
             &kv,
             "stats",
@@ -103,7 +139,7 @@ async fn tui(env: &Env) -> Result<Response> {
         get("https://spotatui.com/widget/largemodgames.json".into()),
     );
 
-    let profile = assemble(&Raw {
+    let mut profile = assemble(&Raw {
         stats,
         top_langs,
         pin_spotatui,
@@ -123,7 +159,36 @@ async fn tui(env: &Env) -> Result<Response> {
         "Cache-Control",
         "no-cache, no-store, must-revalidate, max-age=0",
     )?;
-    Ok(Response::ok(crate::svg::render(&draw(&profile, tab)))?.with_headers(headers))
+    if let Some(url) = profile
+        .now_playing
+        .as_ref()
+        .and_then(|t| t.image_url.as_deref())
+    {
+        profile.cover_art = cover_art(url).await;
+    }
+    let (buf, art) = draw(&profile, tab.unwrap_or(Tab::Spotatui));
+    let svg = crate::svg::render(&buf, profile.cover_art.as_deref().map(|uri| (art, uri)));
+    Ok(Response::ok(svg)?.with_headers(headers))
+}
+
+/// Fetches allowlisted cover art and returns it as a `data:` URI.
+async fn cover_art(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    if parsed.scheme() != "https" || !ART_HOSTS.contains(&parsed.host_str()?) {
+        return None;
+    }
+    let mut res = Fetch::Url(parsed).send().await.ok()?;
+    let kind = res.headers().get("Content-Type").ok()??;
+    let kind = kind.split(';').next()?.trim().to_owned();
+    if res.status_code() != 200 || !kind.starts_with("image/") {
+        return None;
+    }
+    let bytes = res.bytes().await.ok()?;
+    if bytes.is_empty() || bytes.len() > ART_MAX_BYTES {
+        return None;
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some(format!("data:{kind};base64,{b64}"))
 }
 
 fn is_pin(s: &str) -> bool {

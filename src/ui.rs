@@ -6,10 +6,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Tabs, Widget};
 
 pub const WIDTH: u16 = 96;
-pub const HEIGHT: u16 = 46;
+pub const HEIGHT: u16 = 51;
+/// Cover art width in cells; with 6 rows of 18 px it is close to square.
+const ART_WIDTH: u16 = 13;
 
 const ACCENT: Color = Color::Rgb(0xF7, 0x93, 0x1E);
 const MUTED: Color = Color::DarkGray;
+const TRACK: Color = Color::Rgb(0x3E, 0x3D, 0x32);
 const HEAT: [Color; 5] = [
     Color::Rgb(0x3E, 0x3D, 0x32),
     Color::Rgb(0x6B, 0x45, 0x1A),
@@ -56,9 +59,11 @@ pub struct Track {
     /// `playing`, `paused` or `live`, as spotatui.com reports it.
     pub state: String,
     pub title: String,
-    pub subtitle: String,
+    pub artists: String,
+    pub album: String,
     pub progress_ms: u64,
     pub duration_ms: u64,
+    pub image_url: Option<String>,
 }
 
 pub struct Presence {
@@ -92,6 +97,8 @@ pub struct Language {
 
 pub struct Profile {
     pub now_playing: Option<Track>,
+    /// The cover as a `data:` URI, inlined because GitHub's image proxy blocks external images.
+    pub cover_art: Option<String>,
     pub discord: Option<Presence>,
     pub views: String,
     pub followers: String,
@@ -106,7 +113,8 @@ pub struct Profile {
     pub total_contributions: u64,
 }
 
-pub fn draw(profile: &Profile, tab: Tab) -> Buffer {
+/// Draws the frame and returns it with the cell area reserved for the cover art.
+pub fn draw(profile: &Profile, tab: Tab) -> (Buffer, Rect) {
     let area = Rect::new(0, 0, WIDTH, HEIGHT);
     let mut buf = Buffer::empty(area);
 
@@ -118,7 +126,7 @@ pub fn draw(profile: &Profile, tab: Tab) -> Buffer {
     frame.render(area, &mut buf);
 
     let [header_area, tabs, rule, body, strip, footer] = Layout::vertical([
-        Constraint::Length(9),
+        Constraint::Length(14),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
@@ -128,7 +136,7 @@ pub fn draw(profile: &Profile, tab: Tab) -> Buffer {
     .horizontal_margin(1)
     .areas(inner);
 
-    header(profile, header_area, &mut buf);
+    let art = header(profile, header_area, &mut buf);
 
     Tabs::new(Tab::ALL.map(|t| t.title()))
         .select(Tab::ALL.iter().position(|t| *t == tab))
@@ -162,10 +170,10 @@ pub fn draw(profile: &Profile, tab: Tab) -> Buffer {
     .fg(MUTED)
     .render(footer, &mut buf);
 
-    buf
+    (buf, art)
 }
 
-fn header(p: &Profile, area: Rect, buf: &mut Buffer) {
+fn header(p: &Profile, area: Rect, buf: &mut Buffer) -> Rect {
     let mut lines = vec![
         Line::default(),
         Line::from(
@@ -186,66 +194,115 @@ fn header(p: &Profile, area: Rect, buf: &mut Buffer) {
         area.width as usize,
         "",
     ));
-    lines.push(Line::default());
     Paragraph::new(lines).render(area, buf);
 
-    let [live, presence_area] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(30)])
+    let [player, side] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(26)])
+        .spacing(2)
         .areas(Rect {
             y: area.y + 5,
-            height: 3,
+            height: 8,
             ..area
         });
+    side_column(p, side, buf);
+    now_playing_panel(p, player, buf)
+}
 
-    let playing = match &p.now_playing {
-        Some(t) => {
-            let status = match t.state.as_str() {
-                "live" => Span::from(" LIVE ").fg(Color::Black).bg(Color::Red).bold(),
-                "paused" => {
-                    Span::from(format!("⏸ {}", clock(t.progress_ms, t.duration_ms))).fg(MUTED)
-                }
-                _ => Span::from(format!("▶ {}", clock(t.progress_ms, t.duration_ms))).fg(ACCENT),
-            };
-            // Fit "♪ title · subtitle  status" in the column, shortening the subtitle first.
-            let room =
-                (live.width as usize).saturating_sub(2 + 3 + 2 + status.content.chars().count());
-            let title = truncate(&t.title, room.saturating_sub(room / 3).max(room.min(12)));
-            let subtitle = truncate(&t.subtitle, room.saturating_sub(title.chars().count()));
-            Line::from(vec![
-                Span::from("♪ ").fg(ACCENT),
-                Span::from(title).bold(),
-                Span::from(" · ").fg(MUTED),
-                Span::from(subtitle),
-                Span::from("  "),
-                status,
-            ])
-        }
-        None => Line::from(vec![
-            Span::from("♪ ").fg(ACCENT),
-            Span::from("Not listening right now").fg(MUTED),
-        ]),
-    };
-    Paragraph::new(vec![
-        playing,
+/// Draws the player panel and returns the cell area reserved for the cover art.
+fn now_playing_panel(p: &Profile, area: Rect, buf: &mut Buffer) -> Rect {
+    let block = panel(" ♪ Now playing on spotatui ").title_bottom(
         Line::from(vec![
-            Span::from("↑ live from "),
+            Span::from(" ↑ live from "),
             Span::from("spotatui").bold(),
-            Span::from(", the terminal music player I maintain"),
+            Span::from(", the terminal music player I maintain "),
         ])
         .fg(MUTED),
-        Line::from(
-            [
-                badge("PROFILE VIEWS", &p.views),
-                badge("FOLLOWERS", &p.followers),
-                badge("STARS", &p.stars),
-            ]
-            .into_iter()
-            .flat_map(|b| b.into_iter().chain([Span::from("  ")]))
-            .collect::<Vec<_>>(),
-        ),
+    );
+    let inner = block.inner(area);
+    block.render(area, buf);
+    let [art, _, text] = Layout::horizontal([
+        Constraint::Length(ART_WIDTH),
+        Constraint::Length(2),
+        Constraint::Fill(1),
     ])
-    .render(live, buf);
+    .areas(inner);
 
-    let presence = match &p.discord {
+    // Placeholder; the SVG renderer draws the cover image over it when there is one.
+    for y in art.top()..art.bottom() {
+        for x in art.left()..art.right() {
+            buf[(x, y)].set_symbol(" ").set_bg(TRACK);
+        }
+    }
+    Line::from("♪").fg(MUTED).centered().render(
+        Rect {
+            y: art.y + art.height / 2,
+            height: 1,
+            ..art
+        },
+        buf,
+    );
+
+    let width = text.width as usize;
+    let lines = match &p.now_playing {
+        Some(t) => vec![
+            Line::default(),
+            Line::from(truncate(&t.title, width)).bold(),
+            Line::from(truncate(&t.artists, width)),
+            Line::from(truncate(&t.album, width)).fg(MUTED),
+            Line::default(),
+            progress(t, width),
+        ],
+        None => vec![
+            Line::default(),
+            Line::from("Not listening right now").fg(MUTED),
+            Line::from("spotatui.com").fg(MUTED),
+        ],
+    };
+    Paragraph::new(lines).render(text, buf);
+    art
+}
+
+/// `▶ 1:29 ━━━━━━──── 3:56`, with ⏸ when paused and a LIVE tag for streams.
+fn progress(t: &Track, width: usize) -> Line<'static> {
+    let mmss = |ms: u64| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60);
+    let (icon, color) = match t.state.as_str() {
+        "paused" => ("⏸", MUTED),
+        "live" => {
+            return Line::from(vec![
+                Span::from(" LIVE ").fg(Color::Black).bg(Color::Red).bold(),
+                Span::from(format!("  {}", mmss(t.progress_ms))).fg(MUTED),
+            ]);
+        }
+        _ => ("▶", ACCENT),
+    };
+    let (elapsed, total) = (mmss(t.progress_ms), mmss(t.duration_ms));
+    let bar = width.saturating_sub(elapsed.len() + total.len() + 5);
+    let filled = if t.duration_ms > 0 {
+        ((t.progress_ms as f64 / t.duration_ms as f64).clamp(0.0, 1.0) * bar as f64).round()
+            as usize
+    } else {
+        0
+    };
+    Line::from(vec![
+        Span::from(format!("{icon} ")).fg(color),
+        Span::from(format!("{elapsed} ")).fg(MUTED),
+        Span::from(symbols::line::THICK_HORIZONTAL.repeat(filled)).fg(color),
+        Span::from(symbols::line::HORIZONTAL.repeat(bar - filled)).fg(TRACK),
+        Span::from(format!(" {total}")).fg(MUTED),
+    ])
+}
+
+fn side_column(p: &Profile, area: Rect, buf: &mut Buffer) {
+    let [discord, _, badges] = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Length(1),
+        Constraint::Length(3),
+    ])
+    .areas(area);
+
+    let block = panel(" Discord ");
+    let inner = block.inner(discord);
+    block.render(discord, buf);
+    let lines = match &p.discord {
         Some(d) => {
             let (dot, label) = match d.status.as_str() {
                 "online" => (Color::Green, "online"),
@@ -253,26 +310,34 @@ fn header(p: &Profile, area: Rect, buf: &mut Buffer) {
                 "dnd" => (Color::Red, "do not disturb"),
                 _ => (MUTED, "offline"),
             };
-            let mut spans = vec![
-                Span::from("● ").fg(dot),
+            let mut name = vec![
+                Span::from(" ● ").fg(dot),
                 Span::from(d.username.as_str()).bold(),
             ];
             if let Some(tag) = &d.tag {
-                spans.push(Span::from(" "));
-                spans.push(
+                name.push(Span::from(" "));
+                name.push(
                     Span::from(format!(" {tag} "))
                         .fg(Color::Black)
                         .bg(Color::Gray),
                 );
             }
-            spans.push(Span::from(format!("  {label}")).fg(MUTED));
-            Line::from(spans)
+            vec![
+                Line::from(name),
+                Line::from(format!("   {label}")).fg(MUTED),
+            ]
         }
-        None => Line::from("● offline").fg(MUTED),
+        None => vec![Line::from(" ● offline").fg(MUTED)],
     };
-    Paragraph::new(vec![Line::from("Discord").fg(MUTED), presence])
-        .right_aligned()
-        .render(presence_area, buf);
+    Paragraph::new(lines).render(inner, buf);
+
+    Paragraph::new(vec![
+        Line::from(badge("PROFILE VIEWS", &p.views)),
+        Line::from(badge("FOLLOWERS", &p.followers)),
+        Line::from(badge("STARS", &p.stars)),
+    ])
+    .right_aligned()
+    .render(badges, buf);
 }
 
 fn what_i_do(area: Rect, buf: &mut Buffer) {
@@ -673,16 +738,6 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
-/// `m:ss`, or `m:ss / m:ss` when the duration is known.
-fn clock(progress_ms: u64, duration_ms: u64) -> String {
-    let mmss = |ms: u64| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60);
-    if duration_ms > 0 {
-        format!("{} / {}", mmss(progress_ms), mmss(duration_ms))
-    } else {
-        mmss(progress_ms)
-    }
-}
-
 fn grouped(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
@@ -700,17 +755,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn long_tracks_keep_their_progress_visible() {
+    fn now_playing_shows_track_and_progress() {
         let profile = crate::sources::assemble(&crate::sources::Raw {
             now_playing: Some(
-                r#"{"state":"playing","title":"Used To Love (with Dean Lewis)","subtitle":"Martin Garrix, Dean Lewis · Used To Love (with Dean Lewis)","progressMs":89770,"durationMs":236764}"#.into(),
+                r#"{"state":"playing","title":"Used To Love (with Dean Lewis)","artists":"Martin Garrix, Dean Lewis","album":"Used To Love (with Dean Lewis)","subtitle":"x","progressMs":89770,"durationMs":236764,"imageUrl":null}"#.into(),
             ),
             ..Default::default()
         });
-        let buf = draw(&profile, Tab::Spotatui);
-        let row: String = (0..WIDTH).map(|x| buf[(x, 6)].symbol()).collect();
-        assert!(row.contains("▶ 1:29 / 3:56"), "{row}");
-        assert!(row.contains('…'), "{row}");
+        let (buf, art) = draw(&profile, Tab::Spotatui);
+        let text: String = (0..HEIGHT)
+            .map(|y| (0..WIDTH).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
+            .collect();
+        assert!(text.contains("Martin Garrix, Dean Lewis"), "{text}");
+        assert!(text.contains("▶ 1:29 ━"), "{text}");
+        assert!(text.contains("─ 3:56"), "{text}");
+        assert_eq!((art.width, art.height), (ART_WIDTH, 6));
     }
 
     #[test]
@@ -725,12 +784,6 @@ mod tests {
     fn truncates_with_ellipsis() {
         assert_eq!(truncate("abcdef", 4), "abc…");
         assert_eq!(truncate("abc", 4), "abc");
-    }
-
-    #[test]
-    fn formats_track_clock() {
-        assert_eq!(clock(83_000, 225_000), "1:23 / 3:45");
-        assert_eq!(clock(5_000, 0), "0:05");
     }
 
     #[test]

@@ -7,3 +7,11 @@ command = "cargo install -q worker-build && worker-build --release"
 
 [[kv_namespaces]]
 binding = "STATE"
+
+[[durable_objects.bindings]]
+name = "TAB"
+class_name = "TabState"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TabState"]

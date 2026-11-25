@@ -15,13 +15,14 @@ fn main() {
         views: read("komarev.svg"),
         lanyard: read("lanyard.json"),
         now_playing: Some(
-            r#"{"state":"playing","title":"Sample Track","subtitle":"Sample Artist · Sample Album","progressMs":83000,"durationMs":225000}"#.into(),
+            r#"{"state":"playing","title":"Sample Track","artists":"Sample Artist","album":"Sample Album","progressMs":83000,"durationMs":225000}"#.into(),
         ),
     });
     std::fs::create_dir_all("preview").unwrap();
     for tab in Tab::ALL {
         let path = format!("preview/{}.svg", tab.slug());
-        std::fs::write(&path, readme_tui::svg::render(&draw(&profile, tab))).unwrap();
+        let (buf, _) = draw(&profile, tab);
+        std::fs::write(&path, readme_tui::svg::render(&buf, None)).unwrap();
         println!("wrote {path}");
     }
 }

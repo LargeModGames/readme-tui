@@ -40,6 +40,7 @@ pub fn assemble(raw: &Raw) -> Profile {
         .unwrap_or_default();
     Profile {
         now_playing: raw.now_playing.as_deref().and_then(now_playing),
+        cover_art: None,
         discord: raw.lanyard.as_deref().and_then(lanyard),
         views: raw
             .views
@@ -206,12 +207,18 @@ pub fn now_playing(json: &str) -> Option<Track> {
     if state == "offline" {
         return None;
     }
+    let text = |key: &str| v[key].as_str().unwrap_or_default().to_owned();
     Some(Track {
         state: state.to_owned(),
         title: v["title"].as_str()?.to_owned(),
-        subtitle: v["subtitle"].as_str().unwrap_or_default().to_owned(),
+        // Older responses only had the combined subtitle.
+        artists: v["artists"]
+            .as_str()
+            .map_or_else(|| text("subtitle"), str::to_owned),
+        album: text("album"),
         progress_ms: v["progressMs"].as_u64().unwrap_or(0),
         duration_ms: v["durationMs"].as_u64().unwrap_or(0),
+        image_url: v["imageUrl"].as_str().map(str::to_owned),
     })
 }
 
@@ -320,13 +327,21 @@ mod tests {
     #[test]
     fn reads_now_playing_and_treats_offline_as_nothing() {
         let t = now_playing(
-            r#"{"state":"playing","title":"T","subtitle":"A · B","progressMs":1000,"durationMs":2000}"#,
+            r#"{"state":"playing","title":"T","artists":"A","album":"B","progressMs":1000,"durationMs":2000,"imageUrl":"https://i.scdn.co/image/x"}"#,
         )
         .unwrap();
         assert_eq!(
-            (t.state.as_str(), t.title.as_str(), t.progress_ms),
-            ("playing", "T", 1000)
+            (
+                t.state.as_str(),
+                t.title.as_str(),
+                t.artists.as_str(),
+                t.album.as_str()
+            ),
+            ("playing", "T", "A", "B")
         );
+        assert_eq!(t.image_url.as_deref(), Some("https://i.scdn.co/image/x"));
+        let old = now_playing(r#"{"state":"paused","title":"T","subtitle":"A · B"}"#).unwrap();
+        assert_eq!((old.artists.as_str(), old.album.as_str()), ("A · B", ""));
         assert!(now_playing(r#"{"state":"offline","title":"Not listening right now"}"#).is_none());
     }
 }

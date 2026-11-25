@@ -52,6 +52,9 @@ allow:
 - Box-drawing characters (`│ ─ ╭ ╮ ╰ ╯`) become stroked paths through the cell centre, so borders
   join across rows instead of looking dashed.
 - Backgrounds are merged into one rectangle per run of equal colour.
+- The cover art is a real image placed over the cells reserved for it. Camo will not let an SVG
+  load anything external, so the Worker downloads the cover (only from the hosts spotatui uses)
+  and inlines it as a base64 `data:` URI.
 
 **`ui.rs`** lays out the frame with normal ratatui widgets: `Block`, `Tabs`, `Paragraph`, and a
 few hand-drawn parts. The contribution graph fits two days into each cell: an upper half block
@@ -74,7 +77,7 @@ services:
 | Contribution graph | GitHub GraphQL `contributionCalendar` | cached 30 min |
 | Profile views | komarev counter | every render, so views keep counting |
 | Discord status | [Lanyard](https://github.com/Phineas/lanyard) | every render |
-| Now playing | `spotatui.com/widget/<user>.json` | every render |
+| Now playing and cover art | `spotatui.com/widget/<user>.json` | every render |
 
 Reading the cards, instead of reimplementing their maths, keeps the numbers identical to what the
 cards showed before.
@@ -85,9 +88,14 @@ Any value whose source has no data at all is drawn as `?`; a failed source never
 
 ### Shared tabs
 
-The links under the image point at `/tab/<name>`. The Worker writes that name to KV and redirects
-back to the profile. The next render reads it, so the tab changes for every visitor, not just for
-the one who clicked.
+The links under the image point at `/tab/<name>`. The Worker stores that name in a Durable Object
+and redirects back to the profile. The next render reads it, so the tab changes for every visitor,
+not just for the one who clicked.
+
+The tab lives in a Durable Object rather than KV on purpose. KV reads in other locations can return
+the old value for up to a minute, and GitHub's image proxy fetches from a different location than
+the visitor who clicked, so with KV a click looked like it did nothing. A Durable Object is a single
+strongly consistent instance: every click is applied in order and the very next render sees it.
 
 ## Project layout
 
@@ -96,7 +104,7 @@ the one who clicked.
 | `src/svg.rs` | ratatui `Buffer` to SVG |
 | `src/ui.rs` | the layout and every panel |
 | `src/sources.rs` | parsers for each data source, and assembling the `Profile` |
-| `src/worker.rs` | the Worker: routes, fetching, KV cache (wasm32 only) |
+| `src/worker.rs` | the Worker: routes, fetching, KV cache, tab Durable Object (wasm32 only) |
 | `src/bin/preview.rs` | renders every tab from saved responses, no network |
 | `tests/fixtures/` | real responses from each source, used by the tests and the preview |
 
